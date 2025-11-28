@@ -234,23 +234,23 @@ def render_dashboard(df_trans, df_map, df_prices):
     
     st.divider()
 
-    # --- NUOVI GRAFICI DI ALLOCAZIONE ---
+    # --- GRAFICI DI ALLOCAZIONE ---
     st.subheader("📊 Composizione Portafoglio")
     
     col_chart1, col_chart2 = st.columns(2)
     
     with col_chart1:
-        # 1. Grafico a Torta (Allocazione Asset)
+        # 1. Grafico a Torta (SOLO %)
         fig_pie = px.pie(view, values='mkt_val', names='product', title='Allocazione per Asset', hole=0.4)
-        fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+        # Qui diciamo: metti SOLO la percentuale dentro, il resto (i nomi) lasciali in legenda
+        fig_pie.update_traces(textposition='inside', textinfo='percent')
         st.plotly_chart(fig_pie, use_container_width=True)
         
     with col_chart2:
-        # 2. Treemap (Dimensione = Valore, Colore = Performance)
-        # Questo grafico è potentissimo: vedi subito chi sta guadagnando (Verde) e chi perdendo (Rosso)
+        # 2. Treemap
         fig_tree = px.treemap(view, path=['product'], values='mkt_val',
                               color='pnl%', 
-                              color_continuous_scale='RdYlGn', # Rosso -> Giallo -> Verde
+                              color_continuous_scale='RdYlGn',
                               color_continuous_midpoint=0,
                               title='Mappa Valore e Performance')
         fig_tree.update_layout(margin=dict(t=50, l=25, r=25, b=25))
@@ -300,11 +300,9 @@ def render_dashboard(df_trans, df_map, df_prices):
     # --- TABELLA INTERATTIVA ---
     st.subheader("📋 I Tuoi Asset (Clicca sulla riga per dettagli)")
     
-    # Prepariamo la tabella
     display_df = view[['product', 'ticker', 'quantity', 'net_invested', 'mkt_val', 'pnl%']].copy()
     display_df = display_df.sort_values('mkt_val', ascending=False)
     
-    # Renderizziamo la tabella con selezione attiva
     selection = st.dataframe(
         display_df.style.format({
             'quantity': "{:.2f}", 'net_invested': "€ {:.2f}", 
@@ -319,22 +317,20 @@ def render_dashboard(df_trans, df_map, df_prices):
             "mkt_val": "Valore Oggi",
             "pnl%": "P&L"
         },
-        selection_mode="single-row", # Clicca una riga sola
-        on_select="rerun", # Ricarica per processare il click
+        selection_mode="single-row",
+        on_select="rerun",
         hide_index=True
     )
 
-    # SE L'UTENTE CLICCA UNA RIGA -> VAI AL DETTAGLIO
     if selection.selection.rows:
         idx = selection.selection.rows[0]
-        # Recupera i dati reali dal dataframe originale (non quello formattato)
-        # Nota: display_df potrebbe essere ordinato diversamente dall'indice visuale
-        selected_row = display_df.iloc[idx]
-        go_to_detail(selected_row['ticker'], selected_row['product'])
+        selected_ticker = display_df.iloc[idx]['ticker']
+        selected_product = display_df.iloc[idx]['product']
+        go_to_detail(selected_ticker, selected_product)
 
 
 # ==========================================
-#               VISTA: DETTAGLIO
+#               VISTA: DETTAGLIO ETF
 # ==========================================
 def render_detail(df_full, df_prices):
     if st.button("⬅️ Torna alla Dashboard"):
@@ -343,7 +339,7 @@ def render_detail(df_full, df_prices):
     ticker = st.session_state.selected_ticker
     product = st.session_state.selected_product
     
-    st.title(f"🔎 {product}")
+    st.title(f"🔎 Analisi: {product}")
     st.caption(f"Ticker: {ticker}")
 
     df_asset = df_full[df_full['ticker'] == ticker]
@@ -368,12 +364,12 @@ def render_detail(df_full, df_prices):
     st.divider()
 
     if not asset_prices.empty:
-        st.subheader("Andamento Prezzo")
+        st.subheader("Andamento Prezzo (Storico)")
         fig = px.line(asset_prices, x='date', y='close_price')
         fig.update_traces(line_color='#00CC96')
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("Nessun dato storico trovato.")
+        st.warning("Nessun dato di prezzo storico trovato.")
 
     st.subheader("Storico Transazioni")
     st.dataframe(
@@ -388,20 +384,17 @@ def render_detail(df_full, df_prices):
     )
 
 # ==========================================
-#               ROUTER
+#               ROUTER PRINCIPALE
 # ==========================================
 def main():
-    # Caricamento unico per velocità
     with st.spinner("Caricamento..."):
         df_trans = get_data("transactions")
         df_map = get_data("mapping")
         df_prices = get_data("prices")
 
-    # Routing
     if st.session_state.page == 'home':
         render_dashboard(df_trans, df_map, df_prices)
     elif st.session_state.page == 'detail':
-        # Prepara df_full per il dettaglio
         if not df_trans.empty and not df_map.empty:
             df_trans['date'] = pd.to_datetime(df_trans['date'], errors='coerce').dt.normalize()
             df_trans = df_trans.dropna(subset=['date'])
