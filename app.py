@@ -9,7 +9,7 @@ from utils import load_and_clean_data
 st.set_page_config(page_title="Portfolio Home", layout="wide", page_icon="🏠")
 
 st.title("🏠 Dashboard Portafoglio")
-
+st.sidebar.success("Menu Caricato Correttamente")
 # 1. Caricamento Dati
 df_trans, df_map, df_prices, df_full = load_and_clean_data()
 
