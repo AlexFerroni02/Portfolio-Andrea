@@ -9,7 +9,7 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, date
 
 # --- CONFIGURAZIONE PAGINA ---
-st.set_page_config(page_title="Portfolio Pro", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Portfolio Pro super", layout="wide", page_icon="🚀")
 
 # --- GESTIONE NAVIGAZIONE (Stato della Sessione) ---
 if 'page' not in st.session_state:
