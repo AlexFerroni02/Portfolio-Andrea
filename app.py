@@ -46,16 +46,16 @@ def save_data(df, sheet_name):
     except Exception as e:
         st.error(f"Errore salvataggio {sheet_name}: {e}")
 
-# --- PARSING ---
+# --- PARSING AVANZATO (Con Costi Inclusi) ---
 def parse_degiro_csv(file):
     df = pd.read_csv(file)
-    cols = ['Quantità', 'Quotazione', 'Valore', 'Costi di transazione']
+    # Aggiunto 'Totale' alla lista delle colonne da pulire
+    cols = ['Quantità', 'Quotazione', 'Valore', 'Costi di transazione', 'Totale']
     for c in cols:
         if c in df.columns:
             df[c] = df[c].astype(str).str.replace(',', '.').apply(pd.to_numeric, errors='coerce').fillna(0)
     
     if 'Data' in df.columns:
-        # FIX 1: Normalizzazione immediata all'importazione
         df['Data'] = pd.to_datetime(df['Data'], format='%d-%m-%Y', errors='coerce').dt.normalize()
     
     if 'Costi di transazione' in df.columns:
@@ -63,7 +63,6 @@ def parse_degiro_csv(file):
     return df
 
 def generate_id(row):
-    # Usa stringa della data per ID stabile
     d_str = row['Data'].strftime('%Y-%m-%d') if pd.notna(row['Data']) else ""
     raw = f"{d_str}{row['Ora']}{row['ISIN']}{row['ID Ordine']}"
     return hashlib.md5(raw.encode()).hexdigest()
@@ -72,7 +71,6 @@ def sync_prices(tickers):
     if not tickers: return 0
     df_prices = get_data("prices")
     
-    # FIX 2: Pulizia date nel DB prezzi esistente
     if not df_prices.empty:
         df_prices['date'] = pd.to_datetime(df_prices['date'], errors='coerce').dt.normalize()
         df_prices = df_prices.dropna(subset=['date'])
@@ -86,11 +84,9 @@ def sync_prices(tickers):
             exist = df_prices[df_prices['ticker'] == t]
             if not exist.empty:
                 last = exist['date'].max()
-                # Scarica solo se mancano dati da ieri in poi
                 if pd.notna(last) and last.date() < (date.today() - timedelta(days=1)):
                     start_date = (last + timedelta(days=1)).strftime('%Y-%m-%d')
                 elif pd.notna(last):
-                    # Già aggiornato
                     bar.progress((i+1)/len(tickers))
                     continue
 
@@ -101,7 +97,6 @@ def sync_prices(tickers):
                 if isinstance(closes, pd.DataFrame): closes = closes.iloc[:,0]
                 for d, v in closes.items():
                     if pd.notna(v):
-                        # Salviamo data pulita
                         new_data.append({'ticker': t, 'date': d.strftime('%Y-%m-%d'), 'close_price': float(v)})
         except: pass
         bar.progress((i+1)/len(tickers))
@@ -109,21 +104,27 @@ def sync_prices(tickers):
     bar.empty()
     if new_data:
         df_new = pd.DataFrame(new_data)
-        # Assicuriamoci che anche i nuovi siano datetime per il concat corretto
         df_new['date'] = pd.to_datetime(df_new['date'])
-        
-        # Unione sicura
         df_fin = pd.concat([df_prices, df_new], ignore_index=True)
         df_fin = df_fin.drop_duplicates(subset=['ticker', 'date'])
-        
-        # Salvataggio
         save_data(df_fin, "prices")
         return len(new_data)
     return 0
 
+# --- FUNZIONE STILE PER P&L ---
+def color_pnl(val):
+    """Colora di verde se positivo, rosso se negativo"""
+    try:
+        v = float(val.strip('%'))
+        color = '#d4edda' if v >= 0 else '#f8d7da' # Sfondo Verde chiaro / Rosso chiaro
+        text_color = '#155724' if v >= 0 else '#721c24' # Testo Verde scuro / Rosso scuro
+        return f'background-color: {color}; color: {text_color}'
+    except:
+        return ''
+
 # --- MAIN ---
 def main():
-    st.title("🌐 Portfolio Cloud")
+    st.title("🌐 Portfolio Cloud Pro")
     
     with st.spinner("Caricamento Database..."):
         df_trans = get_data("transactions")
@@ -143,79 +144,82 @@ def main():
                 if pd.isna(r['ISIN']): continue
                 tid = generate_id(r)
                 if tid not in exist:
+                    # ORA USIAMO 'Totale' PER IL VALORE LOCALE
+                    # Così include le commissioni nel calcolo dell'investito
+                    valore_reale = r['Totale'] if r['Totale'] != 0 else r['Valore']
+                    
                     rows.append({
                         'id': tid, 'date': r['Data'].strftime('%Y-%m-%d'),
                         'product': r['Prodotto'], 'isin': r['ISIN'],
-                        'quantity': r['Quantità'], 'local_value': r['Valore'],
+                        'quantity': r['Quantità'], 
+                        'local_value': valore_reale, # <--- QUI LA MAGIA
                         'fees': r['Costi di transazione'], 'currency': 'EUR'
                     })
                     exist.append(tid)
                     c += 1
             if rows:
                 save_data(pd.concat([df_trans, pd.DataFrame(rows)], ignore_index=True), "transactions")
-                st.success(f"Aggiunte {c} righe")
+                st.success(f"Aggiunte {c} righe (Costi inclusi!)")
                 st.rerun()
 
-    # --- SYNC BUTTON ---
     if not df_map.empty:
         if st.button("🔄 Aggiorna Prezzi"):
             sync_prices(df_map['ticker'].unique().tolist())
             st.rerun()
 
-    # --- PULIZIA DATI CRITICA PER IL GRAFICO ---
-    # Se mancano dati, stop
     if df_trans.empty or df_prices.empty or df_map.empty:
-        st.info("Dati insufficienti per il grafico. Carica CSV e Aggiorna Prezzi.")
+        st.info("Dati insufficienti. Carica CSV e Aggiorna Prezzi.")
         return
 
-    # FIX 3: Convertiamo TUTTE le date in formato 'datetime' puro (senza ora)
+    # Normalizzazione Date
     df_trans['date'] = pd.to_datetime(df_trans['date'], errors='coerce').dt.normalize()
     df_prices['date'] = pd.to_datetime(df_prices['date'], errors='coerce').dt.normalize()
-    
-    # Rimuoviamo righe con date non valide
     df_trans = df_trans.dropna(subset=['date'])
     df_prices = df_prices.dropna(subset=['date'])
     
-    # Merge Transazioni + Mapping
     df_full = df_trans.merge(df_map, on='isin', how='left')
 
-    # --- CALCOLI ATTUALI ---
+    # Calcoli
     last_p = df_prices.sort_values('date').groupby('ticker').tail(1).set_index('ticker')['close_price']
     
     view = df_full.groupby(['product', 'ticker']).agg({'quantity':'sum', 'local_value':'sum'}).reset_index()
     view = view[view['quantity'] > 0.001]
-    view['net_invested'] = -view['local_value']
+    
+    # net_invested ora è -local_value (che era Totale, quindi include le fee)
+    view['net_invested'] = -view['local_value'] 
     view['curr_price'] = view['ticker'].map(last_p)
     view['mkt_val'] = view['quantity'] * view['curr_price']
     view['pnl'] = view['mkt_val'] - view['net_invested']
+    view['pnl%'] = (view['pnl']/view['net_invested'])*100
     
-    # --- DASHBOARD KPI ---
+    # --- KPI EVIDENTI ---
     tot_val = view['mkt_val'].sum()
     tot_inv = view['net_invested'].sum()
-    st.metric("Valore Portafoglio", f"€ {tot_val:,.2f}", delta=f"Investito: € {tot_inv:,.2f}")
+    tot_pnl = tot_val - tot_inv
     
-    # --- LOGICA GRAFICO (Il cuore del problema) ---
+    # Colonne grandi e colorate per i totali
+    st.markdown("### 📊 Riepilogo Portafoglio")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Valore Attuale", f"€ {tot_val:,.2f}")
+    c2.metric("Capitale Investito (incl. Costi)", f"€ {tot_inv:,.2f}")
+    c3.metric("Profitto Netto", f"€ {tot_pnl:,.2f}", 
+              delta=f"{(tot_pnl/tot_inv)*100:.2f}%" if tot_inv else "0%",
+              delta_color="normal") # Verde/Rosso automatico
+    
+    st.divider()
+    
+    # --- GRAFICO ---
     st.subheader("Andamento Temporale")
-    
-    # Creiamo la tabella pivot dei prezzi: Righe=Date, Colonne=Ticker
-    # FIX 4: .sort_index() e .ffill() sono vitali per riempire i buchi dei weekend
     pivot = df_prices.pivot(index='date', columns='ticker', values='close_price').sort_index().ffill()
-    
-    # Assicuriamoci che l'indice della pivot sia datetime
     pivot.index = pd.to_datetime(pivot.index)
-
-    # Generiamo tutte le date dal primo acquisto a oggi
     start_dt = df_trans['date'].min()
     rng = pd.date_range(start_dt, datetime.today(), freq='D').normalize()
     
     hist = []
     current_qty = {}
-    
-    # Raggruppiamo transazioni per data
     trans_grouped = df_full.groupby('date')
     
     for d in rng:
-        # Aggiorna quantità se ci sono movimenti oggi
         if d in trans_grouped.groups:
             daily_moves = trans_grouped.get_group(d)
             for _, row in daily_moves.iterrows():
@@ -223,31 +227,41 @@ def main():
                 if pd.notna(tk):
                     current_qty[tk] = current_qty.get(tk, 0) + row['quantity']
         
-        # Calcola valore totale del giorno 'd'
         day_val = 0
         for tk, qty in current_qty.items():
             if qty > 0 and tk in pivot.columns:
-                # Trova il prezzo alla data 'd' o il più recente prima (asof)
-                # Questo risolve il problema se 'd' è domenica
                 if d >= pivot.index.min():
                     try:
                         idx = pivot.index.asof(d)
                         if pd.notna(idx):
                             price = pivot.at[idx, tk]
-                            if pd.notna(price):
-                                day_val += qty * price
+                            if pd.notna(price): day_val += qty * price
                     except: pass
-        
         hist.append({'Data': d, 'Valore': day_val})
     
-    # Disegna
-    chart_df = pd.DataFrame(hist)
-    st.plotly_chart(px.line(chart_df, x='Data', y='Valore'), use_container_width=True)
+    st.plotly_chart(px.line(pd.DataFrame(hist), x='Data', y='Valore'), use_container_width=True)
 
-    # --- TABELLA DETTAGLI ---
-    st.subheader("Dettaglio")
-    fmt = {'quantity':"{:.2f}", 'net_invested':"€ {:.2f}", 'mkt_val':"€ {:.2f}"}
-    st.dataframe(view[['product', 'quantity', 'net_invested', 'mkt_val']].style.format(fmt))
+    # --- TABELLA MIGLIORATA E COLORATA ---
+    st.subheader("Dettaglio Asset")
+    
+    # Creiamo il dataframe per la visualizzazione
+    display_df = view[['product', 'quantity', 'net_invested', 'mkt_val', 'pnl%']].copy()
+    
+    # Formattazione
+    format_dict = {
+        'quantity': "{:.2f}",
+        'net_invested': "€ {:.2f}",
+        'mkt_val': "€ {:.2f}",
+        'pnl%': "{:.2f}" # Lasciamo numero puro per colorarlo
+    }
+    
+    # Applichiamo lo stile
+    st.dataframe(
+        display_df.style
+        .format(format_dict)
+        .applymap(color_pnl, subset=['pnl%']) # Colora solo la colonna P&L
+        .format({'pnl%': "{:.2f}%"}) # Aggiunge il % dopo aver colorato
+    )
 
 if __name__ == "__main__":
     main()
