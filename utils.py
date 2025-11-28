@@ -71,7 +71,6 @@ def generate_id(row, index):
 
 def sync_prices(tickers):
     if not tickers: return 0
-    # Qui chiamiamo get_data, che potrebbe essere cachato, ma va bene per leggere lo stato attuale
     df_prices = get_data("prices")
     
     if not df_prices.empty:
@@ -106,11 +105,19 @@ def sync_prices(tickers):
     if new_data:
         df_new = pd.DataFrame(new_data)
         df_new['date'] = pd.to_datetime(df_new['date'])
-        df_fin = pd.concat([df_prices, df_new], ignore_index=True).drop_duplicates(subset=['ticker', 'date'])
         
-        # Salvando i dati, save_data chiamerà get_data.clear()
-        save_data(df_fin, "prices")
-        return len(new_data)
+        # Filtra solo i dati effettivamente nuovi
+        df_combined = pd.concat([df_prices, df_new], ignore_index=True)
+        df_combined = df_combined.drop_duplicates(subset=['ticker', 'date'], keep='first')
+        
+        # Calcola quanti dati sono effettivamente nuovi
+        num_new_prices = len(df_combined) - len(df_prices)
+        
+        # Salva solo se ci sono nuovi dati
+        if num_new_prices > 0:
+            save_data(df_combined, "prices")
+        return num_new_prices
+    
     return 0
 
 def color_pnl(val):
