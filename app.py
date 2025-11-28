@@ -10,6 +10,21 @@ from datetime import datetime, timedelta, date
 # --- CONFIGURAZIONE ---
 st.set_page_config(page_title="Portfolio Manager", layout="wide", page_icon="📈")
 
+# --- LISTA DI AUTOMAZIONE (I Tuoi Ticker) ---
+KNOWN_TICKERS = {
+    "IE000BI8OT95": "MWRD.PA",
+    "LU1287023185": "MTD.PA",
+    "IE00BDBRDM35": "0GGH.L",
+    "IE00BKM4GZ66": "EIMI.MI",
+    "IE00B579F325": "SGLD.MI",
+    "IE00BP3QZ825": "IWMO.MI",
+    "LU1829221024": "UST.MI",
+    "US0846707026": "BRYN.DE",
+    "IE00B466KX20": "SPYA.DE",
+    "IT0005162406": "TGYM.MI",
+    "LU1781541179": "LCUW.DE",
+}
+
 # --- CONNESSIONE DATABASE ---
 @st.cache_resource
 def get_google_sheet_client():
@@ -61,15 +76,15 @@ def parse_degiro_csv(file):
         df['Costi di transazione'] = df['Costi di transazione'].abs()
     return df
 
-def generate_id(row):
-    """Genera ID robusto anche se manca ID Ordine"""
+def generate_id(row, index):
+    """Genera ID robusto usando anche l'indice della riga per evitare duplicati su split order"""
     d_str = row['Data'].strftime('%Y-%m-%d') if pd.notna(row['Data']) else ""
-    # Gestione sicura dei campi mancanti
     order_id = str(row['ID Ordine']) if pd.notna(row['ID Ordine']) else "NO_ID"
     isin = str(row['ISIN']) if pd.notna(row['ISIN']) else "NO_ISIN"
     
-    # Combinazione unica di campi
-    raw = f"{d_str}{row['Ora']}{isin}{order_id}{row['Quantità']}{row['Valore']}"
+    # Aggiungiamo 'index' (il numero di riga) all'hash!
+    # Così anche due righe identiche avranno ID diversi
+    raw = f"{index}{d_str}{row['Ora']}{isin}{order_id}{row['Quantità']}{row['Valore']}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 def sync_prices(tickers):
@@ -134,6 +149,26 @@ def main():
         df_map = get_data("mapping")
         df_prices = get_data("prices")
 
+    # --- AUTO-MAPPING ---
+    if not df_trans.empty:
+        current_map = {}
+        if not df_map.empty:
+            current_map = dict(zip(df_map['isin'], df_map['ticker']))
+        
+        updates = []
+        all_isins = df_trans['isin'].unique()
+        for isin in all_isins:
+            if isin in KNOWN_TICKERS:
+                target_ticker = KNOWN_TICKERS[isin]
+                if isin not in current_map or current_map[isin] != target_ticker:
+                    updates.append({'isin': isin, 'ticker': target_ticker})
+        
+        if updates:
+            new_map_rows = [{'isin': k, 'ticker': v} for k, v in KNOWN_TICKERS.items()]
+            save_data(pd.DataFrame(new_map_rows), "mapping")
+            st.toast("Mapping aggiornato.", icon="✅")
+            st.rerun()
+
     with st.sidebar:
         st.header("Menu")
         up = st.file_uploader("CSV Degiro", type=['csv'])
@@ -143,13 +178,12 @@ def main():
             exist = df_trans['id'].tolist() if not df_trans.empty else []
             c = 0
             
-            # Debug per capire quante righe senza ID ci sono
-            no_id_count = len(ndf[ndf['ID Ordine'].isna()])
-            
-            for _, r in ndf.iterrows():
+            for idx, r in ndf.iterrows():
                 if pd.isna(r['ISIN']): continue
                 
-                tid = generate_id(r)
+                # ORA PASSIAMO ANCHE L'INDICE (idx) PER GENERARE UN ID DAVVERO UNICO
+                tid = generate_id(r, idx)
+                
                 if tid not in exist:
                     valore_reale = r['Totale'] if r['Totale'] != 0 else r['Valore']
                     rows.append({
@@ -163,10 +197,10 @@ def main():
                     c += 1
             if rows:
                 save_data(pd.concat([df_trans, pd.DataFrame(rows)], ignore_index=True), "transactions")
-                msg = f"Aggiunte {c} righe."
-                if no_id_count > 0: msg += f" (Incluse {no_id_count} operazioni speciali senza ID)"
-                st.success(msg)
+                st.success(f"Aggiunte {c} righe nuove.")
                 st.rerun()
+            else:
+                st.warning("Nessuna NUOVA transazione trovata. Se pensi che manchi qualcosa, prova a cancellare il foglio 'transactions' su Google e re-importare tutto.")
 
     if not df_map.empty:
         if st.button("🔄 Aggiorna Prezzi"):
@@ -177,7 +211,7 @@ def main():
         st.info("Dati insufficienti. Carica CSV e Aggiorna Prezzi.")
         return
 
-    # Normalizzazione Date
+    # Normalizzazione
     df_trans['date'] = pd.to_datetime(df_trans['date'], errors='coerce').dt.normalize()
     df_prices['date'] = pd.to_datetime(df_prices['date'], errors='coerce').dt.normalize()
     df_trans = df_trans.dropna(subset=['date'])
@@ -185,6 +219,7 @@ def main():
     
     df_full = df_trans.merge(df_map, on='isin', how='left')
 
+    # Calcoli
     last_p = df_prices.sort_values('date').groupby('ticker').tail(1).set_index('ticker')['close_price']
     
     view = df_full.groupby(['product', 'ticker']).agg({
@@ -192,7 +227,6 @@ def main():
         'local_value':'sum'
     }).reset_index()
     
-    # Filtro quote residue
     view = view[view['quantity'] > 0.001]
     
     view['net_invested'] = -view['local_value']
@@ -214,6 +248,7 @@ def main():
     
     st.divider()
     
+    # Grafico
     st.subheader("Andamento Temporale")
     pivot = df_prices.pivot(index='date', columns='ticker', values='close_price').sort_index().ffill()
     pivot.index = pd.to_datetime(pivot.index)
@@ -246,6 +281,7 @@ def main():
     
     st.plotly_chart(px.line(pd.DataFrame(hist), x='Data', y='Valore'), use_container_width=True)
 
+    # Tabella
     st.subheader("Dettaglio Asset")
     display_df = view[['product', 'quantity', 'net_invested', 'mkt_val', 'pnl%']].copy()
     format_dict = {'quantity': "{:.2f}", 'net_invested': "€ {:.2f}", 'mkt_val': "€ {:.2f}", 'pnl%': "{:.2f}"}
