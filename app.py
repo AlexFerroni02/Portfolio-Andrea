@@ -13,7 +13,6 @@ st.set_page_config(page_title="Portfolio Manager", layout="wide", page_icon="�
 # --- CONNESSIONE GOOGLE SHEETS ---
 @st.cache_resource
 def get_google_sheet_client():
-    # Legge le credenziali dai segreti di Streamlit Cloud
     secrets = st.secrets["gcp_service_account"]
     creds = Credentials.from_service_account_info(
         secrets,
@@ -24,11 +23,11 @@ def get_google_sheet_client():
 def get_data(sheet_name):
     client = get_google_sheet_client()
     try:
-        sh = client.open("PortfolioDB") # Assicurati che il nome sia identico al tuo file Google
+        sh = client.open("PortfolioDB")
         wks = sh.worksheet(sheet_name)
         data = wks.get_all_records()
         return pd.DataFrame(data)
-    except Exception as e:
+    except Exception:
         return pd.DataFrame()
 
 def save_data(df, sheet_name):
@@ -41,14 +40,12 @@ def save_data(df, sheet_name):
     
     wks.clear()
     if not df.empty:
-        # Convertiamo tutto in stringa per evitare errori di compatibilità JSON
         df_str = df.astype(str)
         wks.update([df_str.columns.values.tolist()] + df_str.values.tolist())
 
 # --- FUNZIONI DI CALCOLO ---
 def parse_degiro_csv(file):
     df = pd.read_csv(file)
-    # Pulizia colonne italiane
     cols = ['Quantità', 'Quotazione', 'Valore', 'Costi di transazione']
     for c in cols:
         if c in df.columns:
@@ -63,22 +60,25 @@ def parse_degiro_csv(file):
     return df
 
 def generate_id(row):
-    # Genera ID unico per evitare duplicati
     raw = f"{row['Data']}{row['Ora']}{row['ISIN']}{row['ID Ordine']}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 def sync_prices(tickers):
-    """Scarica e salva i prezzi mancanti"""
+    """Scarica e salva i prezzi mancanti - VERSIONE PROTETTA"""
     if not tickers: return 0
     
     df_prices = get_data("prices")
-    # Converti colonne se esistono dati
+    
+    # --- PROTEZIONE ERRORI DATE ---
     if not df_prices.empty:
-        df_prices['date'] = pd.to_datetime(df_prices['date'])
-        df_prices['close_price'] = pd.to_numeric(df_prices['close_price'])
+        # Se c'è sporcizia, la ignora (coerce) e rimuove le righe vuote
+        df_prices['date'] = pd.to_datetime(df_prices['date'], errors='coerce')
+        df_prices = df_prices.dropna(subset=['date'])
+        
+        # Converte anche il prezzo per sicurezza
+        df_prices['close_price'] = pd.to_numeric(df_prices['close_price'], errors='coerce')
     
     new_data = []
-    
     progress = st.progress(0)
     status = st.empty()
     
@@ -86,7 +86,6 @@ def sync_prices(tickers):
         status.write(f"Controllo {t}...")
         start_date = "2020-01-01"
         
-        # Se abbiamo già dati, scarica solo il nuovo
         if not df_prices.empty:
             existing = df_prices[df_prices['ticker'] == t]
             if not existing.empty:
@@ -99,7 +98,6 @@ def sync_prices(tickers):
         try:
             hist = yf.download(t, start=start_date, progress=False)
             if not hist.empty:
-                # Gestione formato yfinance (Serie o DataFrame)
                 closes = hist['Close']
                 if isinstance(closes, pd.DataFrame):
                     closes = closes.iloc[:, 0]
@@ -120,21 +118,22 @@ def sync_prices(tickers):
     
     if new_data:
         df_new = pd.DataFrame(new_data)
-        df_final = pd.concat([df_prices, df_new], ignore_index=True).drop_duplicates(subset=['ticker', 'date'])
+        # Unisce e rimuove duplicati
+        df_final = pd.concat([df_prices, df_new], ignore_index=True)
+        df_final = df_final.drop_duplicates(subset=['ticker', 'date'])
         save_data(df_final, "prices")
         return len(new_data)
     return 0
 
-# --- INTERFACCIA UTENTE (Senza dizionario, gestione manuale) ---
+# --- INTERFACCIA UTENTE ---
 def main():
     st.title("🌐 Il Mio Portafoglio Cloud")
     
-    # Caricamento Dati Iniziale
     with st.spinner("Lettura Database..."):
         df_trans = get_data("transactions")
         df_map = get_data("mapping")
 
-    # --- SIDEBAR: UPLOAD ---
+    # --- UPLOAD ---
     with st.sidebar:
         st.header("Gestione")
         up_file = st.file_uploader("Carica CSV Degiro", type=['csv'])
@@ -154,7 +153,7 @@ def main():
                         'product': r['Prodotto'],
                         'isin': r['ISIN'],
                         'quantity': r['Quantità'],
-                        'local_value': r['Valore'],
+                        'local_value': r['Valore'], 
                         'fees': r['Costi di transazione'],
                         'currency': 'EUR'
                     })
@@ -170,8 +169,7 @@ def main():
             else:
                 st.info("Nessuna nuova transazione.")
 
-    # --- SYNC PREZZI ---
-    # Qui legge solo dal tuo file mapping manuale
+    # --- AGGIORNA PREZZI ---
     if not df_map.empty:
         col1, col2 = st.columns([1,3])
         if col1.button("🔄 Aggiorna Prezzi"):
@@ -184,14 +182,12 @@ def main():
     # --- DASHBOARD ---
     df_prices = get_data("prices")
     
-    # --- CORREZIONE ERRORE DATE ---
+    # PROTEZIONE DATE ANCHE QUI
     if not df_prices.empty:
-        # Questa è la modifica fondamentale: 'coerce' ignora gli errori
         df_prices['date'] = pd.to_datetime(df_prices['date'], errors='coerce')
         df_prices = df_prices.dropna(subset=['date'])
 
     if not df_trans.empty and not df_map.empty and not df_prices.empty:
-        # Prepara Merge
         df_full = df_trans.merge(df_map, on='isin', how='left')
         
         last_prices = df_prices.sort_values('date').groupby('ticker').tail(1).set_index('ticker')['close_price']
@@ -251,6 +247,6 @@ def main():
         st.plotly_chart(px.line(pd.DataFrame(history), x='Data', y='Valore'), use_container_width=True)
         st.subheader("Dettaglio Asset")
         st.dataframe(view[['product', 'quantity', 'net_invested', 'market_value', 'pnl_perc']].style.format("{:.2f}"))
-        
+
 if __name__ == "__main__":
     main()
