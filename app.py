@@ -134,7 +134,7 @@ def color_pnl(val):
 #               VISTA: DASHBOARD
 # ==========================================
 def render_dashboard(df_trans, df_map, df_prices):
-    st.title("🚀 Dashboard Portafoglio")
+    st.title("🚀 Dashboard Portafoglio super")
 
     # --- SIDEBAR (Import & Sync) ---
     with st.sidebar:
