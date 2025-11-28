@@ -10,6 +10,19 @@ st.set_page_config(page_title="Portfolio Home", layout="wide", page_icon="🏠")
 
 st.title("🏠 Dashboard Portafoglio")
 st.sidebar.success("Menu Caricato Correttamente")
+# --- MENU LATERALE MANUALE ---
+# Qui definiamo esplicitamente i link alle pagine
+with st.sidebar:
+    st.header("Navigazione")
+    # Link alla Home (questo file)
+    st.page_link("app.py", label="Home", icon="🏠")
+    
+    # Link alle altre pagine (assicurati che i nomi dei file siano esatti)
+    st.page_link("pages/1_Analisi_Asset.py", label="Analisi Asset", icon="🔎")
+    st.page_link("pages/2_Gestione_Dati.py", label="Gestione Dati", icon="📂")
+    
+    st.divider()
+    st.success("Menu Caricato")
 # 1. Caricamento Dati
 df_trans, df_map, df_prices, df_full = load_and_clean_data()
 
