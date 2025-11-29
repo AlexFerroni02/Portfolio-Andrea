@@ -134,4 +134,5 @@ def make_sidebar():
         st.page_link("app.py", label="Dashboard", icon="🏠")
         st.page_link("pages/2_Gestione_Dati.py", label="Gestione Dati", icon="📂")
         st.page_link("pages/3_Benchmark.py", label="Benchmark", icon="⚖️")
+        st.page_link("pages/4_Bilancio.py", label="Bilancio", icon="💰")
         st.divider()
