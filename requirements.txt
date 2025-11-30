@@ -2,5 +2,5 @@ streamlit
 pandas
 yfinance
 plotly
-gspread
-google-auth
+psycopg2-binary
+sqlalchemy

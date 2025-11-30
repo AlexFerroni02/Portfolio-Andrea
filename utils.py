@@ -2,56 +2,48 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import hashlib
-import gspread
-from google.oauth2.service_account import Credentials
 from datetime import date, timedelta, datetime
 
-# --- GOOGLE SHEETS ---
+# --- CONNESSIONE AL DATABASE (NEON/POSTGRESQL) ---
 @st.cache_resource
-def get_google_sheet_client():
-    try:
-        secrets = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(
-            secrets,
-            scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        )
-        return gspread.authorize(creds)
-    except Exception as e:
-        st.error(f"Errore Secrets: {e}")
-        return None
+def get_db_connection():
+    """Stabilisce la connessione al DB usando i secrets di Streamlit. Questa funzione è cachata per l'intera sessione."""
+    return st.connection("postgresql", type="sql")
 
-# --- CACHING (TTL 10 min) ---
-@st.cache_data(ttl=600)
-def get_data(sheet_name):
-    client = get_google_sheet_client()
-    if not client: return pd.DataFrame()
+# --- LETTURA DATI (CON CACHE STRUTTURALE) ---
+@st.cache_data
+def get_data(table_name):
+    """
+    Legge un'intera tabella dal database.
+    I dati vengono cachati. La cache viene invalidata esplicitamente da save_data().
+    """
     try:
-        sh = client.open("PortfolioDB")
-        wks = sh.worksheet(sheet_name)
-        data = wks.get_all_records()
-        return pd.DataFrame(data)
-    except: return pd.DataFrame()
+        conn = get_db_connection()
+        # Usiamo un ttl basso qui per sicurezza, ma l'invalidazione principale avviene in save_data
+        df = conn.query(f'SELECT * FROM "{table_name}";', ttl=5) 
+        return df
+    except Exception:
+        return pd.DataFrame()
 
-# --- SALVATAGGIO E PULIZIA CACHE ---
-def save_data(df, sheet_name):
-    client = get_google_sheet_client()
-    if not client: return
+# --- SALVATAGGIO DATI (CON INVALIDAZIONE CACHE) ---
+def save_data(df, table_name, method='replace'):
+    """
+    Salva un DataFrame in una tabella.
+    - method='replace': Sovrascrive l'intera tabella (default).
+    - method='append': Aggiunge le nuove righe in fondo alla tabella.
+    """
     try:
-        sh = client.open("PortfolioDB")
-        try: wks = sh.worksheet(sheet_name)
-        except: wks = sh.add_worksheet(title=sheet_name, rows=1000, cols=20)
-        wks.clear()
-        if not df.empty:
-            df_str = df.astype(str)
-            wks.update([df_str.columns.values.tolist()] + df_str.values.tolist())
+        conn = get_db_connection()
+        df.to_sql(name=table_name, con=conn.engine, if_exists=method, index=False)
         
-        # *** PUNTO CRUCIALE: SVUOTA LA CACHE ***
-        # Questo costringe Streamlit a riscaricare i dati freschi alla prossima chiamata
+        # Questa riga ora funziona perché get_data ha di nuovo il decoratore @st.cache_data
         get_data.clear()
         
-    except Exception as e: st.error(f"Errore salvataggio {sheet_name}: {e}")
+    except Exception as e:
+        st.error(f"Errore durante il salvataggio della tabella '{table_name}': {e}")
 
-# --- PARSING & LOGICA ---
+# --- FUNZIONI DI LOGICA (INVARIATE) ---
+
 def parse_degiro_csv(file):
     df = pd.read_csv(file)
     cols = ['Quantità', 'Quotazione', 'Valore', 'Costi di transazione', 'Totale']
@@ -71,52 +63,45 @@ def generate_id(row, index):
 
 def sync_prices(tickers):
     if not tickers: return 0
-    df_prices = get_data("prices")
     
-    if not df_prices.empty:
-        df_prices['date'] = pd.to_datetime(df_prices['date'], errors='coerce').dt.normalize()
-        df_prices = df_prices.dropna(subset=['date'])
-    
+    # Usiamo il metodo 'append' per efficienza
+    df_prices_all = get_data("prices")
+    if not df_prices_all.empty:
+        df_prices_all['date'] = pd.to_datetime(df_prices_all['date'], errors='coerce').dt.normalize()
+        df_prices_all = df_prices_all.dropna(subset=['date'])
+
     new_data = []
-    bar = st.progress(0)
+    bar = st.progress(0, text="Sincronizzazione prezzi...")
     for i, t in enumerate(tickers):
         start_date = "2020-01-01"
-        if not df_prices.empty:
-            exist = df_prices[df_prices['ticker'] == t]
+        if not df_prices_all.empty:
+            exist = df_prices_all[df_prices_all['ticker'] == t]
             if not exist.empty:
                 last = exist['date'].max()
                 if pd.notna(last) and last.date() < (date.today() - timedelta(days=1)):
                     start_date = (last + timedelta(days=1)).strftime('%Y-%m-%d')
                 elif pd.notna(last):
-                    bar.progress((i+1)/len(tickers))
+                    bar.progress((i + 1) / len(tickers), text=f"Prezzi per {t} già aggiornati.")
                     continue
         try:
             hist = yf.download(t, start=start_date, progress=False)
             if not hist.empty:
                 closes = hist['Close']
-                if isinstance(closes, pd.DataFrame): closes = closes.iloc[:,0]
                 for d, v in closes.items():
                     if pd.notna(v):
                         new_data.append({'ticker': t, 'date': d.strftime('%Y-%m-%d'), 'close_price': float(v)})
-        except: pass
-        bar.progress((i+1)/len(tickers))
+        except Exception:
+            pass
+        bar.progress((i + 1) / len(tickers), text=f"Scaricati prezzi per {t}")
     bar.empty()
     
     if new_data:
         df_new = pd.DataFrame(new_data)
-        df_new['date'] = pd.to_datetime(df_new['date'])
-        
-        # Filtra solo i dati effettivamente nuovi
-        df_combined = pd.concat([df_prices, df_new], ignore_index=True)
-        df_combined = df_combined.drop_duplicates(subset=['ticker', 'date'], keep='first')
-        
-        # Calcola quanti dati sono effettivamente nuovi
-        num_new_prices = len(df_combined) - len(df_prices)
-        
-        # Salva solo se ci sono nuovi dati
-        if num_new_prices > 0:
-            save_data(df_combined, "prices")
-        return num_new_prices
+        # Sovrascriviamo l'intera tabella dei prezzi per semplicità, dopo averla aggiornata
+        df_combined = pd.concat([df_prices_all, df_new], ignore_index=True)
+        df_combined = df_combined.drop_duplicates(subset=['ticker', 'date'], keep='last')
+        save_data(df_combined, "prices", method='replace')
+        return len(df_new)
     
     return 0
 
@@ -126,7 +111,8 @@ def color_pnl(val):
         color = '#d4edda' if v >= 0 else '#f8d7da'
         text_color = '#155724' if v >= 0 else '#721c24'
         return f'background-color: {color}; color: {text_color}'
-    except: return ''
+    except:
+        return ''
 
 def make_sidebar():
     with st.sidebar:
