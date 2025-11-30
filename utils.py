@@ -113,6 +113,27 @@ def color_pnl(val):
         return f'background-color: {color}; color: {text_color}'
     except:
         return ''
+    
+def style_chart_for_mobile(fig):
+    """
+    Rende il grafico perfetto sia su Mobile che Desktop.
+    - Mobile: La legenda sopra non ruba spazio, i margini sono zero.
+    - Desktop: La legenda sopra è elegante, il grafico è largo.
+    """
+    fig.update_layout(
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        margin=dict(l=10, r=10, t=40, b=10),
+        hovermode="x unified",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
 
 def make_sidebar():
     with st.sidebar:

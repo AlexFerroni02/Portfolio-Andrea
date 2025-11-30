@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
-from utils import get_data, save_data, color_pnl, make_sidebar
+from utils import get_data, save_data, color_pnl, make_sidebar, style_chart_for_mobile
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Portfolio Pro", layout="wide", page_icon="🚀")
@@ -49,13 +49,9 @@ if missing_isins:
 df_trans['date'] = pd.to_datetime(df_trans['date'], errors='coerce').dt.normalize()
 df_prices['date'] = pd.to_datetime(df_prices['date'], errors='coerce').dt.normalize()
 
-# Unisce transazioni e mapping
 df_full = df_trans.merge(df_map, on='isin', how='left')
-
-# Recupera l'ultimo prezzo disponibile
 last_p = df_prices.sort_values('date').groupby('ticker').tail(1).set_index('ticker')['close_price']
 
-# Calcolo View aggregata
 view = df_full.groupby(['product', 'ticker']).agg({'quantity':'sum', 'local_value':'sum'}).reset_index()
 view = view[view['quantity'] > 0.001] 
 
@@ -82,41 +78,37 @@ col1, col2 = st.columns(2)
 with col1:
     if not view.empty:
         fig_pie = px.pie(view, values='mkt_val', names='product', title='Allocazione Asset', hole=0.4)
-        # MODIFICA: textinfo='percent' mostra solo la % dentro la fetta
         fig_pie.update_traces(textposition='inside', textinfo='percent')
+        fig_pie = style_chart_for_mobile(fig_pie) # Applica stile generale
+        fig_pie.update_layout(showlegend=False) # Nasconde la legenda per questo grafico
         st.plotly_chart(fig_pie, use_container_width=True)
 with col2:
     if not view.empty:
         fig_tree = px.treemap(view, path=['product'], values='mkt_val', color='pnl%',
                               color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
                               title='Mappa Performance')
+        fig_tree = style_chart_for_mobile(fig_tree) # Applica stile generale
         st.plotly_chart(fig_tree, use_container_width=True)
 
 # --- GRAFICO STORICO (OTTIMIZZATO - VETTORIALE) ---
 st.subheader("📉 Andamento Temporale")
 if not df_prices.empty and not df_full.empty:
-    # 1. Crea timeline completa
     start_dt = df_trans['date'].min()
     end_dt = datetime.today()
     full_idx = pd.date_range(start_dt, end_dt, freq='D').normalize()
 
-    # 2. Calcola quantità giornaliere (Pivot + Cumsum)
     daily_qty_change = df_full.pivot_table(index='date', columns='ticker', values='quantity', aggfunc='sum').fillna(0)
     daily_holdings = daily_qty_change.reindex(full_idx, fill_value=0).cumsum()
 
-    # 3. Prepara i prezzi (Pivot + Ffill)
     price_matrix = df_prices.pivot(index='date', columns='ticker', values='close_price')
     price_matrix = price_matrix.reindex(full_idx).ffill() 
 
-    # 4. Calcola Valore (Moltiplicazione matriciale: Holdings * Prices)
     common_cols = daily_holdings.columns.intersection(price_matrix.columns)
     daily_value = (daily_holdings[common_cols] * price_matrix[common_cols]).sum(axis=1)
 
-    # 5. Calcola Investito (Cumulativo)
     daily_inv_change = df_full.pivot_table(index='date', values='local_value', aggfunc='sum').fillna(0)
     daily_invested = -daily_inv_change.reindex(full_idx, fill_value=0).cumsum()
 
-    # 6. Crea DataFrame finale per il grafico
     hdf = pd.DataFrame({
         'Data': full_idx,
         'Valore': daily_value,
@@ -126,6 +118,7 @@ if not df_prices.empty and not df_full.empty:
     fig_hist = go.Figure()
     fig_hist.add_trace(go.Scatter(x=hdf['Data'], y=hdf['Valore'], fill='tozeroy', name='Valore Attuale', line_color='#00CC96'))
     fig_hist.add_trace(go.Scatter(x=hdf['Data'], y=hdf['Investito'], name='Soldi Versati', line=dict(color='#EF553B', dash='dash')))
+    fig_hist = style_chart_for_mobile(fig_hist) # APPLICA STILE
     st.plotly_chart(fig_hist, use_container_width=True)
 else:
     st.info("Dati insufficienti per il grafico storico.")

@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from utils import get_data, make_sidebar
+from utils import get_data, make_sidebar, style_chart_for_mobile
 
 st.set_page_config(page_title="Analisi Asset", page_icon="🔎", layout="wide")
 make_sidebar()
@@ -53,6 +53,7 @@ if not asset_prices.empty:
     st.subheader("📉 Storico Prezzo")
     fig = px.line(asset_prices, x='date', y='close_price', title=f"Andamento {ticker}")
     fig.update_traces(line_color='#00CC96')
+    fig = style_chart_for_mobile(fig) # APPLICA STILE
     st.plotly_chart(fig, use_container_width=True)
 
 # Tabella Transazioni
@@ -61,5 +62,6 @@ st.dataframe(
     df_asset[['date', 'product', 'quantity', 'local_value', 'fees']].style.format({
         'quantity': "{:.2f}", 'local_value': "€ {:.2f}", 'fees': "€ {:.2f}", 'date': lambda x: x.strftime('%d-%m-%Y')
     }),
-    use_container_width=True
+    use_container_width=True,
+    hide_index=True
 )
