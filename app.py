@@ -18,11 +18,13 @@ with st.spinner("Caricamento dati..."):
     df_trans = get_data("transactions")
     df_map = get_data("mapping")
     df_prices = get_data("prices")
+    df_settings = get_data("settings")
+    df_budget = get_data("budget")
 
 if df_trans.empty:
     st.info("👋 Benvenuto! Il database è vuoto. Vai su 'Gestione Dati' per importare il CSV."), st.stop()
 
-# --- CONTROLLO MAPPATURA MANCANTE (AGGIORNATO) ---
+# --- CONTROLLO MAPPATURA MANCANTE ---
 all_isins = df_trans['isin'].unique()
 mapped_isins = df_map['isin'].unique() if not df_map.empty else []
 missing_isins = [i for i in all_isins if i not in mapped_isins]
@@ -55,6 +57,9 @@ if missing_isins:
 # --- PREPARAZIONE DATI ---
 df_trans['date'] = pd.to_datetime(df_trans['date'], errors='coerce').dt.normalize()
 df_prices['date'] = pd.to_datetime(df_prices['date'], errors='coerce').dt.normalize()
+if not df_budget.empty:
+    df_budget['date'] = pd.to_datetime(df_budget['date'], errors='coerce').dt.normalize()
+
 df_full = df_trans.merge(df_map, on='isin', how='left')
 last_p = df_prices.sort_values('date').groupby('ticker').tail(1).set_index('ticker')['close_price']
 view = df_full.groupby(['product', 'ticker', 'category']).agg({'quantity':'sum', 'local_value':'sum'}).reset_index()
@@ -64,6 +69,44 @@ view['curr_price'] = view['ticker'].map(last_p)
 view['mkt_val'] = view['quantity'] * view['curr_price']
 view['pnl'] = view['mkt_val'] - view['net_invested']
 view['pnl%'] = (view['pnl'] / view['net_invested']) * 100
+
+# --- LOGICA LIQUIDITA' A DUE MODALITA' (MANUALE/AUTOMATICA) ---
+final_liquidity = 0.0
+liquidity_label = "Liquidità"
+manual_override = False
+
+# 1. Controlla se esiste un override manuale
+if not df_settings.empty:
+    liquidity_setting = df_settings[df_settings['key'] == 'manual_liquidity']
+    if not liquidity_setting.empty:
+        manual_liquidity_value = float(liquidity_setting['value'].iloc[0])
+        if manual_liquidity_value > 0:
+            final_liquidity = manual_liquidity_value
+            liquidity_label = "Liquidità Manuale"
+            manual_override = True
+
+# 2. Se non c'è override, calcola la liquidità automaticamente a partire dal primo movimento di budget
+if not manual_override and not df_budget.empty and not df_trans.empty:
+    # Trova la data del primo movimento di budget per iniziare il calcolo da lì
+    start_date_budget = df_budget['date'].min()
+    
+    # Filtra i dati a partire da questa data
+    budget_since_start = df_budget[df_budget['date'] >= start_date_budget]
+    trans_since_start = df_trans[df_trans['date'] >= start_date_budget]
+    
+    # Calcola i totali sui dati filtrati
+    total_entrate = budget_since_start[budget_since_start['type'] == 'Entrata']['amount'].sum()
+    total_uscite = budget_since_start[budget_since_start['type'] == 'Uscita']['amount'].sum()
+    total_investito_netto = -trans_since_start['local_value'].sum()
+    
+    # Liquidità = (Entrate da start) - (Uscite da start) - (Investito da start)
+    final_liquidity = total_entrate - total_uscite - total_investito_netto
+    liquidity_label = "Liquidità Calcolata"
+
+# Aggiungi la liquidità finale (cash) al DataFrame 'view' per i grafici
+if final_liquidity > 0:
+    liquidita_row = pd.DataFrame([{'product': liquidity_label, 'ticker': 'CASH', 'category': 'Liquidità', 'quantity': 1, 'local_value': 0, 'net_invested': final_liquidity, 'curr_price': final_liquidity, 'mkt_val': final_liquidity, 'pnl': 0, 'pnl%': 0}])
+    view = pd.concat([view, liquidita_row], ignore_index=True)
 
 # --- KPI TOTALI ---
 tot_val = view['mkt_val'].sum()
@@ -81,41 +124,30 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["Asset Class", "Azioni/Obbligazioni/Gold
 
 with tab1:
     composition_data = view.groupby('category')['mkt_val'].sum().reset_index()
-    color_map = {
-        'Azionario': '#636EFA',
-        'Obbligazionario': '#00CC96',
-        'Gold': '#FFA15A',
-        'Liquidità': '#AB63FA',
-        'Altro': '#B6E880'
-    }
+    color_map = {'Azionario': '#636EFA', 'Obbligazionario': '#00CC96', 'Gold': '#FFA15A', 'Liquidità': '#AB63FA', 'Altro': '#B6E880'}
     fig_cat = px.pie(composition_data, values='mkt_val', names='category', title='Suddivisione per Asset Class', color='category', color_discrete_map=color_map)
     fig_cat = style_chart_for_mobile(fig_cat)
-    fig_cat.update_traces(
-        textinfo='percent+value', 
-        texttemplate='%{percent} <br>€%{value:,.0f}',
-        hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>'
-    )
+    fig_cat.update_traces(textinfo='percent+value', texttemplate='%{percent} <br>€%{value:,.0f}', hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>')
     fig_cat.update_layout(showlegend=True)
     st.plotly_chart(fig_cat, use_container_width=True)
 
 with tab2:
-    composition_data = view.groupby('category')['mkt_val'].sum().reset_index()
+    # Filtra i dati per includere solo le categorie desiderate
+    categories_to_show = ['Azionario', 'Obbligazionario', 'Gold']
+    filtered_data = view[view['category'].isin(categories_to_show)]
+    
+    # Raggruppa i dati filtrati
+    composition_data = filtered_data.groupby('category')['mkt_val'].sum().reset_index()
+    
     color_map = {
         'Azionario': '#636EFA',
         'Obbligazionario': '#00CC96',
-        'Gold': '#FFA15A',
-        'Altro': '#B6E880'
+        'Gold': '#FFA15A'
     }
-    simple_comp = composition_data.copy()
-    simple_comp['simple_cat'] = simple_comp['category'].apply(lambda x: x if x in ['Azionario', 'Obbligazionario', 'Gold'] else 'Altro')
-    simple_data = simple_comp.groupby('simple_cat')['mkt_val'].sum().reset_index()
-    fig_simple = px.pie(simple_data, values='mkt_val', names='simple_cat', title='Azioni / Obbligazioni / Gold', color='simple_cat', color_discrete_map=color_map)
+    
+    fig_simple = px.pie(composition_data, values='mkt_val', names='category', title='Ripartizione: Azioni / Obbligazioni / Gold', color='category', color_discrete_map=color_map)
     fig_simple = style_chart_for_mobile(fig_simple)
-    fig_simple.update_traces(
-        textinfo='percent+value', 
-        texttemplate='%{percent} <br>€%{value:,.0f}',
-        hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>'
-    )
+    fig_simple.update_traces(textinfo='percent+value', texttemplate='%{percent} <br>€%{value:,.0f}', hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>')
     fig_simple.update_layout(showlegend=True)
     st.plotly_chart(fig_simple, use_container_width=True)
 
@@ -123,10 +155,7 @@ with tab3:
     if not view.empty:
         fig_all_assets = px.pie(view, values='mkt_val', names='product', title='Composizione per singolo Asset')
         fig_all_assets = style_chart_for_mobile(fig_all_assets)
-        fig_all_assets.update_traces(
-            textinfo='percent',
-            hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>'
-        ) 
+        fig_all_assets.update_traces(textinfo='percent', hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>')
         fig_all_assets.update_layout(showlegend=False)
         st.plotly_chart(fig_all_assets, use_container_width=True)
     else:
@@ -137,10 +166,7 @@ with tab4:
     if not df_azionario.empty:
         fig_stock = px.pie(df_azionario, values='mkt_val', names='product', title='Composizione Portafoglio Azionario')
         fig_stock = style_chart_for_mobile(fig_stock)
-        fig_stock.update_traces(
-            textinfo='percent',
-            hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>'
-        )
+        fig_stock.update_traces(textinfo='percent', hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>')
         fig_stock.update_layout(showlegend=False)
         st.plotly_chart(fig_stock, use_container_width=True)
     else:
@@ -151,10 +177,7 @@ with tab5:
     if not df_obbligazionario.empty:
         fig_bond = px.pie(df_obbligazionario, values='mkt_val', names='product', title='Composizione Portafoglio Obbligazionario')
         fig_bond = style_chart_for_mobile(fig_bond)
-        fig_bond.update_traces(
-            textinfo='percent',
-            hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>'
-        )
+        fig_bond.update_traces(textinfo='percent', hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>')
         fig_bond.update_layout(showlegend=False)
         st.plotly_chart(fig_bond, use_container_width=True)
     else:

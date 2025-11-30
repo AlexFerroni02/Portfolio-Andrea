@@ -1,16 +1,15 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime
+from datetime import date
 from utils import get_data, save_data, parse_degiro_csv, generate_id, sync_prices, make_sidebar
 
 st.set_page_config(page_title="Gestione Dati", page_icon="📂", layout="wide")
 make_sidebar()
 st.title("📂 Gestione Database")
 
-# Definiamo le categorie standard in un unico posto
 CATEGORIE_ASSET = ["Azionario", "Obbligazionario", "Gold", "Liquidità"]
 
-tab1, tab2, tab3, tab4 = st.tabs(["📥 Importa CSV", "🔗 Mappatura Ticker", "🔄 Aggiorna Prezzi", "💸 Movimenti Bilancio"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📥 Importa CSV", "🔗 Mappatura Ticker", "🔄 Aggiorna Prezzi", "💸 Movimenti Bilancio", "💰 Liquidità"])
 
 # --- TAB 1: IMPORT ---
 with tab1:
@@ -27,11 +26,7 @@ with tab1:
                 tid = generate_id(r, idx)
                 if tid not in existing_ids:
                     val = r.get('Totale', 0) if r.get('Totale', 0) != 0 else r.get('Valore', 0)
-                    rows_to_add.append({
-                        'id': tid, 'date': r['Data'], 'product': r.get('Prodotto',''), 
-                        'isin': r.get('ISIN',''), 'quantity': r.get('Quantità',0), 
-                        'local_value': val, 'fees': r.get('Costi di transazione',0), 'currency': 'EUR'
-                    })
+                    rows_to_add.append({'id': tid, 'date': r['Data'], 'product': r.get('Prodotto',''), 'isin': r.get('ISIN',''), 'quantity': r.get('Quantità',0), 'local_value': val, 'fees': r.get('Costi di transazione',0), 'currency': 'EUR'})
                     existing_ids.add(tid)
             if rows_to_add:
                 new_df = pd.DataFrame(rows_to_add)
@@ -40,33 +35,35 @@ with tab1:
             else:
                 st.info("Nessuna nuova transazione trovata.")
 
-# --- TAB 2: MAPPING (AGGIORNATO) ---
+# --- TAB 2: MAPPATURA INTERATTIVA ---
 with tab2:
-    st.subheader("Mappatura Asset")
+    st.subheader("Modifica, Aggiungi o Elimina Mappature")
+    st.caption("Fai doppio clic su una cella per modificarla. Aggiungi una riga in fondo per una nuova mappatura.")
     df_map = get_data("mapping")
-    st.dataframe(df_map, use_container_width=True)
-    
-    st.subheader("Aggiungi/Modifica Mappatura")
-    with st.form("add_map"):
-        c1, c2, c3 = st.columns(3)
-        isin = c1.text_input("ISIN (es. IE00B4L5Y983)")
-        ticker = c2.text_input("Ticker Yahoo (es. SWDA.MI)")
-        category = c3.selectbox("Categoria Asset", CATEGORIE_ASSET)
-        
-        if st.form_submit_button("Salva Mappatura"):
-            if isin and ticker and category:
-                new = pd.DataFrame([{'isin': isin.strip(), 'ticker': ticker.strip(), 'category': category}])
-                df_final = pd.concat([df_map, new], ignore_index=True).drop_duplicates(subset=['isin'], keep='last')
-                save_data(df_final, "mapping", method='replace')
-                st.success("Salvato!")
-                st.rerun()
+    df_map_edit = df_map.copy()
+    df_map_edit.insert(0, "Elimina", False)
+    edited_df = st.data_editor(df_map_edit, num_rows="dynamic", use_container_width=True, hide_index=True,
+        column_config={
+            "Elimina": st.column_config.CheckboxColumn(required=True),
+            "isin": st.column_config.TextColumn("ISIN (Obbligatorio)", required=True),
+            "ticker": st.column_config.TextColumn("Ticker Yahoo (Obbligatorio)", required=True),
+            "category": st.column_config.SelectboxColumn("Categoria (Obbligatorio)", options=CATEGORIE_ASSET, required=True,)
+        })
+    if st.button("💾 Salva Modifiche Mappatura", type="primary"):
+        df_to_process = edited_df.copy()
+        df_to_process = df_to_process[df_to_process["Elimina"] == False].drop(columns=["Elimina"])
+        df_to_process.dropna(subset=['isin'], inplace=True)
+        df_to_process = df_to_process[df_to_process['isin'].str.strip() != '']
+        df_to_process.drop_duplicates(subset=['isin'], keep='last', inplace=True)
+        save_data(df_to_process, "mapping", method='replace')
+        st.success("✅ Mappatura aggiornata con successo!")
+        st.rerun()
 
 # --- TAB 3: PREZZI ---
 with tab3:
     st.write("Scarica gli ultimi prezzi di chiusura da Yahoo Finance **solo per gli asset che possiedi**.")
     if st.button("Avvia Sincronizzazione Prezzi"):
-        df_trans = get_data("transactions")
-        df_map = get_data("mapping")
+        df_trans, df_map = get_data("transactions"), get_data("mapping")
         if not df_map.empty and not df_trans.empty:
             n = sync_prices(df_trans, df_map)
             if n > 0: st.success(f"✅ Aggiornamento completato: {n} nuovi prezzi salvati.")
@@ -104,3 +101,48 @@ with tab4:
             column_config={"date": st.column_config.DateColumn("Data", format="DD-MM-YYYY"), "amount": st.column_config.NumberColumn("Importo", format="€ %.2f")})
     else:
         st.info("Nessun movimento ancora registrato.")
+
+# --- TAB 5: GESTIONE LIQUIDITA' ---
+with tab5:
+    st.subheader("Gestione Liquidità Cash")
+    st.info("Di default, la liquidità è calcolata automaticamente. Se vuoi, puoi **sovrascrivere** questo calcolo con un valore manuale (es. il saldo del tuo conto corrente).")
+
+    df_settings = get_data("settings")
+    current_liquidity = 0.0
+    is_manual_mode = False
+    if not df_settings.empty:
+        liquidity_setting = df_settings[df_settings['key'] == 'manual_liquidity']
+        if not liquidity_setting.empty:
+            current_liquidity = float(liquidity_setting['value'].iloc[0])
+            if current_liquidity > 0:
+                is_manual_mode = True
+
+    if is_manual_mode:
+        st.success(f"Modalità Attiva: **Manuale**. Valore attuale: **€ {current_liquidity:,.2f}**")
+    else:
+        st.info("Modalità Attiva: **Automatica**. La liquidità è calcolata da entrate, uscite e investimenti.")
+
+    st.divider()
+    st.subheader("Imposta Valore Manuale")
+    manual_liquidity_input = st.number_input("Importo da impostare (€)", value=current_liquidity if is_manual_mode else 0.0, min_value=0.0, step=100.0, format="%.2f")
+
+    col1, col2 = st.columns(2)
+    if col1.button("💾 Salva Valore Manuale", type="primary"):
+        new_setting = pd.DataFrame([{'key': 'manual_liquidity', 'value': str(manual_liquidity_input)}])
+        df_existing_settings = get_data("settings")
+        if not df_existing_settings.empty:
+            df_existing_settings = df_existing_settings[df_existing_settings['key'] != 'manual_liquidity']
+        df_final_settings = pd.concat([df_existing_settings, new_setting], ignore_index=True)
+        save_data(df_final_settings, "settings", method='replace')
+        st.success(f"✅ Liquidità manuale impostata a € {manual_liquidity_input:,.2f}")
+        st.rerun()
+
+    if col2.button("🗑️ Elimina e Usa Calcolo Automatico"):
+        df_existing_settings = get_data("settings")
+        if not df_existing_settings.empty:
+            df_final_settings = df_existing_settings[df_existing_settings['key'] != 'manual_liquidity']
+            save_data(df_final_settings, "settings", method='replace')
+            st.success("✅ Impostazione manuale rimossa. L'app userà il calcolo automatico.")
+            st.rerun()
+        else:
+            st.info("Nessuna impostazione manuale da rimuovere.")
