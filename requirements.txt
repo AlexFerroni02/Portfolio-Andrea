@@ -4,3 +4,7 @@ yfinance
 plotly
 psycopg2-binary
 sqlalchemy
+requests
+lxml
+etfpy
+playwright

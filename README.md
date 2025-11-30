@@ -110,4 +110,4 @@ streamlit run app.py
 ---
 
 # TO DO
--controllare il fatto che deve aggiungere sogli gli etf che possiedo e non tutti quelli presenti, e di quelli che posside appunto solo gli ultimi di cui mancano le date 
+- playwright install chromium
