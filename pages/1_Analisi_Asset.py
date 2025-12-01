@@ -6,75 +6,82 @@ from utils import get_data, make_sidebar, style_chart_for_mobile
 
 st.set_page_config(page_title="Analisi Asset", page_icon="🔎", layout="wide")
 make_sidebar()
+st.title("🔎 Analisi per Singolo Asset")
 
-ticker = st.session_state.get('selected_ticker')
+# --- CARICAMENTO DATI ---
+with st.spinner("Caricamento dati..."):
+    df_trans = get_data("transactions")
+    df_map = get_data("mapping")
+    df_prices = get_data("prices")
+    df_alloc = get_data("asset_allocation")
 
-if not ticker:
-    st.warning("⚠️ Nessun asset selezionato.")
-    st.info("Vai alla **Home**, seleziona una riga dalla tabella e verrai reindirizzato qui.")
-    if st.button("Torna alla Home"):
-        st.switch_page("app.py")
+if df_trans.empty or df_map.empty:
+    st.warning("⚠️ Dati di transazioni o mappatura mancanti.")
+    st.info("Vai alla pagina 'Gestione Dati' per importare e configurare i tuoi asset.")
     st.stop()
 
-# Carica dati
-df_trans = get_data("transactions")
-df_map = get_data("mapping")
-df_prices = get_data("prices")
-df_alloc = get_data("asset_allocation") # Carica i dati di allocazione
-
-df_trans['date'] = pd.to_datetime(df_trans['date'], errors='coerce').dt.normalize()
-df_prices['date'] = pd.to_datetime(df_prices['date'], errors='coerce').dt.normalize()
-
-# Filtra dati
+# --- LOGICA PER OTTENERE LA LISTA DEGLI ASSET POSSEDUTI ---
 df_full = df_trans.merge(df_map, on='isin', how='left')
-df_asset = df_full[df_full['ticker'] == ticker].sort_values('date', ascending=False)
-asset_prices = df_prices[df_prices['ticker'] == ticker].sort_values('date')
+holdings = df_full.groupby(['product', 'ticker', 'isin']).agg({'quantity':'sum'}).reset_index()
+owned_assets = holdings[holdings['quantity'] > 0.001].copy()
+asset_options = owned_assets.apply(lambda x: f"{x['product']} ({x['ticker']})", axis=1).tolist()
 
-# Ottieni informazioni aggiuntive sull'asset
-asset_info = df_asset.iloc[0] if not df_asset.empty else None
-product_name = asset_info['product'] if asset_info is not None else ticker
-isin = asset_info['isin'] if asset_info is not None else None
+if not asset_options:
+    st.info("Nessun asset attualmente in portafoglio.")
+    st.stop()
 
-# --- HEADER CON PULSANTI ---
-col_title, col_btn1, col_btn2 = st.columns([3, 1, 1])
+# --- SELETTORE ASSET ---
+# Determina l'asset di default: quello selezionato dalla home o il primo della lista
+default_index = 0
+if 'selected_ticker' in st.session_state:
+    try:
+        # Trova l'opzione che corrisponde al ticker salvato
+        selected_option_str = next(opt for opt in asset_options if st.session_state.selected_ticker in opt)
+        default_index = asset_options.index(selected_option_str)
+    except StopIteration:
+        pass # Se non lo trova, usa l'indice 0
+    # Pulisci lo stato per non rimanere "bloccato" su questo asset
+    del st.session_state['selected_ticker']
+
+selected_asset_str = st.selectbox("Seleziona un asset da analizzare:", asset_options, index=default_index)
+ticker = selected_asset_str.split('(')[-1].replace(')', '')
+
+# --- FILTRA I DATI PER L'ASSET SELEZIONATO ---
+df_asset_trans = df_full[df_full['ticker'] == ticker].sort_values('date', ascending=False)
+asset_prices = df_prices[df_prices['ticker'] == ticker].sort_values('date') if not df_prices.empty else pd.DataFrame()
+asset_info = owned_assets[owned_assets['ticker'] == ticker].iloc[0]
+
+# --- HEADER CON INFO E PULSANTI ---
+col_title, col_btn = st.columns([4, 1])
 with col_title:
-    st.title(f"🔎 {product_name}")
-    st.caption(f"Ticker: **{ticker}** | ISIN: **{isin if isin else 'N/A'}**")
-with col_btn1:
-    if st.button("⬅️ Torna alla Dashboard"):
-        st.switch_page("app.py")
-with col_btn2:
-    # Mostra il link a JustETF solo se è un ETF
-    if isin and 'ETF' in product_name:
-        justetf_url = f"https://www.justetf.com/it/etf-profile.html?isin={isin}#allocation"
-        st.link_button("🔎 Vedi su JustETF", justetf_url)
+    st.header(f"{asset_info['product']}")
+    st.caption(f"Ticker: **{ticker}** | ISIN: **{asset_info['isin']}**")
+with col_btn:
+    if 'ETF' in asset_info['product']:
+        st.link_button("🔎 Vedi su JustETF", f"https://www.justetf.com/it/etf-profile.html?isin={asset_info['isin']}")
 
-# KPI Asset
-qty = df_asset['quantity'].sum()
-invested = -df_asset['local_value'].sum()
+# --- KPI ASSET ---
+qty = asset_info['quantity']
+invested = -df_asset_trans['local_value'].sum()
 last_price = asset_prices.iloc[-1]['close_price'] if not asset_prices.empty else 0
 curr_val = qty * last_price
 pnl = curr_val - invested
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Quantità", f"{qty:.2f}")
-c2.metric("Prezzo Oggi", f"€ {last_price:.2f}")
-c3.metric("Valore", f"€ {curr_val:,.2f}")
+c2.metric("Prezzo Corrente", f"€ {last_price:.2f}")
+c3.metric("Valore di Mercato", f"€ {curr_val:,.2f}")
 c4.metric("P&L", f"€ {pnl:,.2f}", delta=f"{(pnl/invested)*100:.2f}%" if invested else "0%")
-
 st.divider()
 
 # --- GRAFICI ALLOCAZIONE ---
 st.subheader("🔬 Composizione Asset")
-asset_alloc_data = df_alloc[df_alloc['ticker'] == ticker]
+asset_alloc_data = df_alloc[df_alloc['ticker'] == ticker] if not df_alloc.empty else pd.DataFrame()
 
 if not asset_alloc_data.empty:
-    # --- FIX: Gestione robusta dei dati JSON/JSONB dal DB ---
     geo_raw = asset_alloc_data.iloc[0].get('geography_json', '{}')
     sec_raw = asset_alloc_data.iloc[0].get('sector_json', '{}')
-    
     try:
-        # Se il DB restituisce già un dizionario, usalo. Altrimenti, parsa la stringa.
         geo_data = geo_raw if isinstance(geo_raw, dict) else json.loads(geo_raw or '{}')
         sec_data = sec_raw if isinstance(sec_raw, dict) else json.loads(sec_raw or '{}')
     except (json.JSONDecodeError, TypeError):
@@ -84,38 +91,38 @@ if not asset_alloc_data.empty:
     with col1:
         if geo_data:
             df_g = pd.DataFrame(list(geo_data.items()), columns=['Paese', 'Percentuale'])
-            fig_geo = px.pie(df_g, values='Percentuale', names='Paese', title='Esposizione Geografica')
+            fig_geo = px.pie(df_g, values='Percentuale', names='Paese', title='Esposizione Geografica', hole=0.4)
             fig_geo.update_layout(showlegend=False)
             fig_geo.update_traces(textinfo='percent', textposition='inside', hovertemplate='<b>%{label}</b>: %{value:.2f}%<extra></extra>')
             st.plotly_chart(style_chart_for_mobile(fig_geo), use_container_width=True)
         else:
-            st.info("Nessun dato geografico per questo asset. Vai su 'X-Ray Portafoglio' per scaricarlo.")
-    
+            st.info("Nessun dato geografico disponibile per questo asset.")
     with col2:
         if sec_data:
             df_s = pd.DataFrame(list(sec_data.items()), columns=['Settore', 'Percentuale'])
-            fig_sec = px.pie(df_s, values='Percentuale', names='Settore', title='Esposizione Settoriale')
+            fig_sec = px.pie(df_s, values='Percentuale', names='Settore', title='Esposizione Settoriale', hole=0.4)
             fig_sec.update_layout(showlegend=False)
             fig_sec.update_traces(textinfo='percent', textposition='inside', hovertemplate='<b>%{label}</b>: %{value:.2f}%<extra></extra>')
             st.plotly_chart(style_chart_for_mobile(fig_sec), use_container_width=True)
         else:
-            st.info("Nessun dato settoriale per questo asset. Vai su 'X-Ray Portafoglio' per scaricarlo.")
+            st.info("Nessun dato settoriale disponibile per questo asset.")
 else:
-    st.info("Dati di allocazione non ancora scaricati per questo asset. Vai alla pagina 'X-Ray Portafoglio'.")
+    st.info("Dati di allocazione non ancora scaricati. Vai su 'Gestione Dati' per scaricarli.")
 
-
-# Grafico Prezzo
+# --- GRAFICO PREZZO E TABELLA TRANSAZIONI ---
+st.divider()
 if not asset_prices.empty:
     st.subheader("📉 Storico Prezzo")
     fig = px.line(asset_prices, x='date', y='close_price', title=f"Andamento {ticker}")
     fig.update_traces(line_color='#00CC96')
     fig = style_chart_for_mobile(fig)
     st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Nessuna informazione sullo storico prezzi per questo asset.")
 
-# Tabella Transazioni
 st.subheader("📝 Storico Transazioni")
 st.dataframe(
-    df_asset[['date', 'product', 'quantity', 'local_value', 'fees']].style.format({
+    df_asset_trans[['date', 'product', 'quantity', 'local_value', 'fees']].style.format({
         'quantity': "{:.2f}", 'local_value': "€ {:.2f}", 'fees': "€ {:.2f}", 'date': lambda x: x.strftime('%d-%m-%Y')
     }),
     use_container_width=True,
