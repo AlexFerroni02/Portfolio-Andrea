@@ -224,17 +224,25 @@ with tab6:
                     st.write(f"**Dati per: {ticker_to_edit}**")
                     c1_edit, c2_edit = st.columns(2)
                     try:
-                        geo_db = record['geography_json'] if isinstance(record['geography_json'], dict) else json.loads(record['geography_json'])
-                        sec_db = record['sector_json'] if isinstance(record['sector_json'], dict) else json.loads(record['sector_json'])
+                        geo_db = record['geography_json'] if isinstance(record['geography_json'], dict) else json.loads(record['geography_json'] or '{}')
+                        sec_db = record['sector_json'] if isinstance(record['sector_json'], dict) else json.loads(record['sector_json'] or '{}')
                     except:
                         geo_db, sec_db = {}, {}
-                    geo_edit_text = c1_edit.text_area("JSON Geografico Esistente", value=json.dumps(geo_db, indent=2, ensure_ascii=False), height=300, key=f"geo_{ticker_to_edit}")
-                    sec_edit_text = c2_edit.text_area("JSON Settoriale Esistente", value=json.dumps(sec_db, indent=2, ensure_ascii=False), height=300, key=f"sec_{ticker_to_edit}")
+                    
+                    # Assegna chiavi uniche per accedere ai valori del form
+                    geo_key = f"geo_edit_{ticker_to_edit}"
+                    sec_key = f"sec_edit_{ticker_to_edit}"
+
+                    c1_edit.text_area("JSON Geografico Esistente", value=json.dumps(geo_db, indent=2, ensure_ascii=False), height=300, key=geo_key)
+                    c2_edit.text_area("JSON Settoriale Esistente", value=json.dumps(sec_db, indent=2, ensure_ascii=False), height=300, key=sec_key)
+                    
                     submitted_edit = st.form_submit_button("💾 Aggiorna Dati", type="primary")
                     if submitted_edit:
                         try:
-                            geo_dict_edit = json.loads(geo_edit_text)
-                            sec_dict_edit = json.loads(sec_edit_text)
+                            # FIX: Legge i dati modificati dallo stato del widget (session_state)
+                            geo_dict_edit = json.loads(st.session_state[geo_key])
+                            sec_dict_edit = json.loads(st.session_state[sec_key])
+                            
                             save_allocation_json(ticker_to_edit, geo_dict_edit, sec_dict_edit)
                             st.success(f"Dati di allocazione per {ticker_to_edit} aggiornati!")
                             st.rerun()
