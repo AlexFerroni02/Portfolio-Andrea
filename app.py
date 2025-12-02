@@ -67,8 +67,8 @@ tot_val_assets = view['mkt_val'].sum()
 tot_inv_assets = view['net_invested'].sum()
 tot_pnl_assets = tot_val_assets - tot_inv_assets
 c1, c2, c3 = st.columns(3)
-c1.metric("💰 Valore Totale Asset", f"€ {tot_val_assets:,.2f}")
-c2.metric("💳 Capitale Investito", f"€ {tot_inv_assets:,.2f}")
+c1.metric("💰 Valore Portafoglio Attuale", f"€ {tot_val_assets:,.2f}")
+c2.metric("💳 Capitale Versato", f"€ {tot_inv_assets:,.2f}")
 c3.metric("📈 P&L Netto", f"€ {tot_pnl_assets:,.2f}", delta=f"{(tot_pnl_assets/tot_inv_assets)*100:.2f}%" if tot_inv_assets else "0%")
 st.divider()
 
@@ -97,7 +97,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Asset Class", "Azioni/Obbligazion
 
 with tab1:
     composition_data = view.groupby('category')['mkt_val'].sum().reset_index()
-    color_map = {'Azionario': '#636EFA', 'Obbligazionario': '#00CC96', 'Gold': '#FFA15A', 'Liquidità': '#AB63FA', 'Altro': '#B6E880'}
+    color_map = {'Azionario': '#3B82F6', 'Obbligazionario': '#EF4444', 'Gold': '#D4AF37', 'Liquidità': '#10B981', 'Altro': '#9CA3AF'}
     fig_cat = px.pie(composition_data, values='mkt_val', names='category', title='Suddivisione per Asset Class', color='category', color_discrete_map=color_map)
     fig_cat = style_chart_for_mobile(fig_cat)
     fig_cat.update_traces(textinfo='percent+value', texttemplate='%{percent} <br>€%{value:,.0f}', hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>')
@@ -106,19 +106,63 @@ with tab2:
     categories_to_show = ['Azionario', 'Obbligazionario', 'Gold']
     filtered_data = view[view['category'].isin(categories_to_show)]
     composition_data = filtered_data.groupby('category')['mkt_val'].sum().reset_index()
-    color_map = {'Azionario': '#636EFA', 'Obbligazionario': '#00CC96', 'Gold': '#FFA15A'}
+    color_map = {'Azionario': '#3B82F6', 'Obbligazionario': "#EF4444", 'Gold': '#D4AF37'}
     fig_simple = px.pie(composition_data, values='mkt_val', names='category', title='Ripartizione: Azioni / Obbligazioni / Gold', color='category', color_discrete_map=color_map)
     fig_simple = style_chart_for_mobile(fig_simple)
     fig_simple.update_traces(textinfo='percent+value', texttemplate='%{percent} <br>€%{value:,.0f}', hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>')
     st.plotly_chart(fig_simple, use_container_width=True)
 with tab3:
     if not view.empty:
-        fig_all_assets = px.pie(view, values='mkt_val', names='product', title='Composizione per singolo Asset')
-        fig_all_assets = style_chart_for_mobile(fig_all_assets)
-        fig_all_assets.update_traces(textinfo='percent', hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>')
-        fig_all_assets.update_layout(showlegend=False)
-        st.plotly_chart(fig_all_assets, use_container_width=True)
-    else: st.info("Nessun asset in portafoglio.")
+        # Colori fissi per categoria
+        color_map = {'Azionario': '#3B82F6', 'Obbligazionario': '#EF4444', 'Gold': '#D4AF37', 'Liquidità': '#10B981', 'Altro': '#9CA3AF'}
+
+        # Prepara i dati: prendi solo le colonne rilevanti e normalizza category
+        prod_df = view[['product', 'category', 'mkt_val']].copy()
+        prod_df['category'] = prod_df['category'].fillna('Altro').astype(str)
+
+        # Mappa categorie sconosciute su 'Altro' così tutte hanno un colore noto
+        prod_df['category'] = prod_df['category'].apply(lambda c: c if c in color_map else 'Altro')
+
+        # Ordine desiderato per raggruppare i segmenti (così categorie vicine)
+        desired_order = ['Azionario', 'Obbligazionario', 'Gold', 'Liquidità', 'Altro']
+        prod_df['category'] = pd.Categorical(prod_df['category'], categories=desired_order, ordered=True)
+
+        # Ordina per categoria (gruppa insieme) e poi per valore decrescente
+        prod_df = prod_df.sort_values(['category', 'mkt_val'], ascending=[True, False]).reset_index(drop=True)
+
+        # Rimuovi righe con valore 0 per evitare slice 0% nel grafico
+        plot_df = prod_df[prod_df['mkt_val'] > 0].copy()
+
+        if plot_df.empty:
+            st.info("Nessun asset con valore da mostrare.")
+        else:
+            # Calcola percentuale e mostra etichetta solo se rilevante (evita etichette '0%')
+            total = plot_df['mkt_val'].sum()
+            plot_df = plot_df.copy()
+            plot_df['pct'] = (plot_df['mkt_val'] / total) * 100
+            plot_df['text'] = plot_df['pct'].apply(lambda x: f"{x:.1f}%" if x >= 0.5 else "")
+
+            # Crea il grafico - usa color sulla colonna category (mappa fissa)
+            fig_all_assets = px.pie(
+                plot_df,
+                values='mkt_val',
+                names='product',
+                title='Composizione per singolo Asset',
+                color='category',
+                color_discrete_map=color_map
+            )
+            fig_all_assets = style_chart_for_mobile(fig_all_assets)
+
+            # Usa le percentuali calcolate come testo (evita 0%)
+            fig_all_assets.update_traces(
+                text=plot_df['text'],
+                textinfo='text',
+                hovertemplate='<b>%{label}</b><br>Valore: €%{value:,.2f}<br>(%{percent})<extra></extra>'
+            )
+            fig_all_assets.update_layout(showlegend=False)
+            st.plotly_chart(fig_all_assets, use_container_width=True)
+    else:
+        st.info("Nessun asset in portafoglio.")
 with tab4:
     df_azionario = view[view['category'] == 'Azionario']
     if not df_azionario.empty:
