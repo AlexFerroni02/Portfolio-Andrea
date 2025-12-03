@@ -202,7 +202,7 @@ if df_trans.empty:
     st.warning("⚠️ Carica prima i dati nella pagina Gestione."), st.stop()
 
 col1, col2 = st.columns([1, 3])
-bench_ticker = col1.text_input("Ticker Yahoo", value="SWDA.MI")
+bench_ticker = col1.text_input("Ticker Yahoo", value="SWDA.MI").upper()
 col2.info("Simulazione Shadow: Ogni euro investito nel tuo portafoglio viene replicato virtualmente sul Benchmark nello stesso istante.")
 
 if bench_ticker:
