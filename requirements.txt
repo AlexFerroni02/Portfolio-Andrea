@@ -1,6 +1,6 @@
 streamlit
 pandas
-yfinance
+yfinance>=0.2.50
 plotly
 psycopg2-binary
 sqlalchemy

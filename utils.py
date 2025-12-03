@@ -64,33 +64,72 @@ def sync_prices(df_trans, df_map):
 
     df_prices_all = get_data("prices")
     if not df_prices_all.empty:
-        df_prices_all['date'] = pd.to_datetime(df_prices_all['date'], errors='coerce').dt.normalize()
+        # Assicuriamoci che la colonna 'date' sia 'datetime' e senza fuso orario per confronti sicuri
+        df_prices_all['date'] = pd.to_datetime(df_prices_all['date'], errors='coerce').dt.tz_localize(None).dt.normalize()
     
     new_data = []
+    errors = []
     bar = st.progress(0, text="Sincronizzazione prezzi...")
+    
+    # Definiamo "oggi" e "ieri"
+    today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+
     for i, t in enumerate(owned_tickers):
         start_date = "2020-01-01"
+        needs_update = True
+        
         if not df_prices_all.empty:
             exist = df_prices_all[df_prices_all['ticker'] == t]
             if not exist.empty:
-                last = exist['date'].max()
-                if pd.notna(last) and last.date() < (date.today() - timedelta(days=1)):
-                    start_date = (last + timedelta(days=1)).strftime('%Y-%m-%d')
-                elif pd.notna(last):
-                    bar.progress((i + 1) / len(owned_tickers), text=f"{t} già aggiornato.")
-                    continue
-        try:
-            hist = yf.download(t, start=start_date, progress=False)
-            if not hist.empty:
-                for d, v in hist['Close'].items():
-                    if pd.notna(v): new_data.append({'ticker': t, 'date': d, 'close_price': float(v)})
-        except Exception: pass
-        bar.progress((i + 1) / len(owned_tickers), text=f"Scaricati prezzi per {t}")
+                last_price_date = exist['date'].max().date()
+                
+                # Se abbiamo già i dati fino a ieri, siamo a posto.
+                if last_price_date >= yesterday:
+                    needs_update = False
+                else:
+                    start_date = (last_price_date + timedelta(days=1)).strftime('%Y-%m-%d')
+
+        if needs_update:
+            bar.progress((i + 1) / len(owned_tickers), text=f"Scaricando {t} dal {start_date}...")
+            try:
+                # Scarica i dati
+                hist = yf.download(t, start=start_date, progress=False)
+                
+                # --- FIX PER YFINANCE RECENTE (MultiIndex) ---
+                if isinstance(hist.columns, pd.MultiIndex):
+                    try:
+                        if t in hist.columns.get_level_values(1):
+                            hist = hist.xs(t, axis=1, level=1)
+                        else:
+                            hist.columns = hist.columns.get_level_values(0)
+                    except Exception:
+                        hist.columns = hist.columns.get_level_values(0)
+
+                if not hist.empty and 'Close' in hist.columns:
+                    for d, v in hist['Close'].items():
+                        # --- FILTRO FONDAMENTALE ---
+                        # Salviamo SOLO se la data del dato è STRETTAMENTE PRECEDENTE a oggi.
+                        # Questo scarta qualsiasi prezzo "live" o "intraday" di oggi.
+                        if pd.notna(v) and d.date() < today: 
+                            new_data.append({'ticker': t, 'date': d.normalize().tz_localize(None), 'close_price': float(v)})
+                else:
+                    if hist.empty:
+                        print(f"Nessun dato trovato per {t} dal {start_date}")
+            except Exception as e: 
+                errors.append(f"{t}: {str(e)}")
+        else:
+            bar.progress((i + 1) / len(owned_tickers), text=f"{t} già aggiornato.")
     
+    if errors:
+        st.warning(f"Problemi con alcuni ticker: {', '.join(errors)}")
+
     if new_data:
         df_new = pd.DataFrame(new_data)
+        df_new['date'] = pd.to_datetime(df_new['date']).dt.normalize()
         save_data(df_new, "prices", method='append')
         return len(df_new)
+    
     return 0
 
 def color_pnl(val):
