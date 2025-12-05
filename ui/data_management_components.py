@@ -4,8 +4,12 @@ import json
 import numpy as np
 from datetime import date
 from database.connection import get_data, save_data, save_allocation_json
-from services.data_service import process_new_transactions, calculate_net_worth_snapshot
-from utils import sync_prices, fetch_justetf_allocation_robust
+from services.data_service import (
+    process_new_transactions, 
+    calculate_net_worth_snapshot,
+    sync_prices,
+    fetch_justetf_allocation_robust
+)
 
 CATEGORIE_ASSET = ["Azionario", "Obbligazionario", "Gold", "Liquidità"]
 

@@ -44,3 +44,20 @@ def calculate_net_worth_trend(df_chart: pd.DataFrame) -> Tuple[pd.DataFrame, Lin
     
     df_trend = pd.DataFrame({'date': trend_dates, 'trend': trend_y})
     return df_trend, model
+
+def parse_degiro_csv(file):
+    df = pd.read_csv(file)
+    cols = ['Quantità', 'Quotazione', 'Valore', 'Costi di transazione', 'Totale']
+    for c in cols:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.replace(',', '.').apply(pd.to_numeric, errors='coerce').fillna(0)
+    if 'Data' in df.columns:
+        df['Data'] = pd.to_datetime(df['Data'], format='%d-%m-%Y', errors='coerce').dt.normalize()
+    if 'Costi di transazione' in df.columns:
+        df['Costi di transazione'] = df['Costi di transazione'].abs()
+    return df
+
+def generate_id(row, index):
+    d_str = row['Data'].strftime('%Y-%m-%d') if pd.notna(row['Data']) else ""
+    raw = f"{index}{d_str}{row.get('Ora','')}{row.get('ISIN','')}{row.get('Quantità','')}{row.get('Valore','')}"
+    return hashlib.md5(raw.encode()).hexdigest()
